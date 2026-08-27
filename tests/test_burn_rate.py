@@ -137,3 +137,57 @@ def test_zero_traffic_zero_burn_no_fire():
     ev = evaluate_policy(FAST_BURN, SLO_999, 0.0, 0.0)
     assert not ev.firing
     assert ev.long.burn_rate == 0.0
+
+
+# --- explicit 0% / 100% budget boundaries ---------------------------------
+
+def test_budget_consumed_zero_is_0pct():
+    # 0% edge: no burn consumes exactly none of the budget.
+    assert budget_consumed(0.0, 3600, W_SECONDS) == 0.0
+
+
+def test_budget_consumed_full_window_is_100pct():
+    # 100% edge (pure form): burning at 1x for the whole window spends exactly
+    # the whole budget. Computed as burn_rate * (W/W), so no float division bite.
+    assert budget_consumed(1.0, W_SECONDS, W_SECONDS) == 1.0
+
+
+def test_slo_rejects_objective_boundaries():
+    # 0% and 100% objectives are both nonsensical SLOs and must be rejected:
+    # objective=1.0 -> zero budget (nothing to burn); objective=0.0 -> all budget.
+    with pytest.raises(ValueError):
+        SLO(name="t", objective=1.0)
+    with pytest.raises(ValueError):
+        SLO(name="t", objective=0.0)
+
+
+# --- low-traffic guard ----------------------------------------------------
+
+def test_low_traffic_suppresses_despite_both_windows_hot():
+    # Both windows well over 14.4x, but the 1h window is basically idle:
+    # 0.2 req/s (~720 requests/hour). A single error there is noise. Suppress.
+    ev = evaluate_policy(FAST_BURN, SLO_999, 0.05, 0.05, long_request_rate=0.2)
+    assert not ev.firing
+    assert ev.suppressed_low_traffic
+    assert "suppressed" in ev.reason()
+
+
+def test_sufficient_traffic_allows_firing():
+    # Same hot ratios, but real traffic (50 req/s) -> the ratio is meaningful -> page.
+    ev = evaluate_policy(FAST_BURN, SLO_999, 0.05, 0.05, long_request_rate=50.0)
+    assert ev.firing
+    assert not ev.suppressed_low_traffic
+
+
+def test_guard_skipped_when_rate_not_supplied():
+    # Backward compatible: no rate given -> guard is a no-op, fires as before.
+    ev = evaluate_policy(FAST_BURN, SLO_999, 0.05, 0.05)
+    assert ev.firing
+    assert not ev.suppressed_low_traffic
+
+
+def test_guard_does_not_suppress_when_not_firing():
+    # Low traffic AND below threshold -> plain not-firing, not a "suppressed" state.
+    ev = evaluate_policy(FAST_BURN, SLO_999, 0.0, 0.0, long_request_rate=0.1)
+    assert not ev.firing
+    assert not ev.suppressed_low_traffic

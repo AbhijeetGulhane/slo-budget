@@ -54,8 +54,11 @@ def test_engine_queries_prometheus_via_fake_transport():
     # Prove the query path end-to-end without a real server.
     def handler(request: httpx.Request) -> httpx.Response:
         expr = request.url.params["query"]
-        # recording-rule form: job:slo_error_ratio:ratio_rate<window>
-        value = "0.02" if expr.endswith(("1h", "5m")) else "0.0"
+        if expr.startswith("sum(rate("):
+            value = "50"  # healthy request rate (req/s) -> clears the low-traffic floor
+        else:
+            # recording-rule ratio form: job:slo_error_ratio:ratio_rate<window>
+            value = "0.02" if expr.endswith(("1h", "5m")) else "0.0"
         return httpx.Response(200, json={"status": "success", "data": {"result": [
             {"metric": {}, "value": [1700000000, value]}
         ]}})
@@ -66,3 +69,39 @@ def test_engine_queries_prometheus_via_fake_transport():
     report = eng.evaluate(client=client)
     assert report.page
     assert any(a.policy == "fast_burn" and a.firing for a in report.alerts)
+
+
+# --- budget-position boundaries: exactly 0% and 100% consumed -------------
+
+def test_zero_percent_budget_consumed():
+    # Clean 0% edge: no errors over the month -> full budget, infinite runway.
+    eng = make_engine()
+    report = eng.build_report({"1h": 0.0, "5m": 0.0, "6h": 0.0, "30m": 0.0, "30d": 0.0})
+    assert report.budget.consumed_fraction == 0.0
+    assert report.budget.remaining_fraction == 1.0
+    assert report.budget.hours_to_exhaustion == math.inf
+    assert not report.page
+
+
+def test_hundred_percent_budget_consumed():
+    # Clean 100% edge: month-long error ratio exactly equal to the budget means
+    # the budget is spent precisely at window close. Float division lands at
+    # 0.99999999..., so assert with tolerance; remaining is ~0, never negative.
+    eng = make_engine()
+    budget = SLO_999.error_budget  # 0.001
+    report = eng.build_report({"1h": 0.0, "5m": 0.0, "6h": 0.0, "30m": 0.0, "30d": budget})
+    assert report.budget.consumed_fraction == pytest.approx(1.0, abs=1e-9)
+    assert report.budget.remaining_fraction == pytest.approx(0.0, abs=1e-9)
+    assert report.budget.remaining_fraction >= 0.0  # floor holds, never negative
+    assert report.budget.hours_to_exhaustion == pytest.approx(0.0, abs=1e-6)
+
+
+def test_report_low_traffic_suppresses_page():
+    # Hot ratios on fast-burn windows, but 1h traffic below the floor -> no page.
+    eng = make_engine()
+    ratios = {"1h": 0.05, "5m": 0.05, "6h": 0.0, "30m": 0.0, "30d": 0.0001}
+    rates = {"1h": 0.1, "6h": 0.1}  # below the 1.0 req/s floor
+    report = eng.build_report(ratios, rates)
+    assert not report.page
+    fast = next(a for a in report.alerts if a.policy == "fast_burn")
+    assert fast.suppressed_low_traffic
