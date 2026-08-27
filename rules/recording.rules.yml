@@ -1,0 +1,30 @@
+# Recording rules: precompute the search-api error ratio at each window the
+# burn-rate policies need. Prometheus evaluates these once per interval instead
+# of the service (or the alert rules) recomputing rate(...[6h]) on every check.
+#
+# Naming follows the Prometheus recommended convention:
+#   level:metric:operations  ->  job:slo_error_ratio:ratio_rate<window>
+groups:
+  - name: search_api_slo_ratios
+    interval: 30s
+    rules:
+      - record: job:slo_error_ratio:ratio_rate5m
+        expr: |
+          sum(rate(search_api_requests_total{status=~"5.."}[5m]))
+          /
+          sum(rate(search_api_requests_total[5m]))
+      - record: job:slo_error_ratio:ratio_rate30m
+        expr: |
+          sum(rate(search_api_requests_total{status=~"5.."}[30m]))
+          /
+          sum(rate(search_api_requests_total[30m]))
+      - record: job:slo_error_ratio:ratio_rate1h
+        expr: |
+          sum(rate(search_api_requests_total{status=~"5.."}[1h]))
+          /
+          sum(rate(search_api_requests_total[1h]))
+      - record: job:slo_error_ratio:ratio_rate6h
+        expr: |
+          sum(rate(search_api_requests_total{status=~"5.."}[6h]))
+          /
+          sum(rate(search_api_requests_total[6h]))

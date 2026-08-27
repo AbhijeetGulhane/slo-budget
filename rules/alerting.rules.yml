@@ -1,0 +1,44 @@
+# Alerting rules — the native-Prometheus equivalent of the service's evaluate()
+# logic. Both fire on the SAME condition: burn rate over BOTH windows above the
+# threshold. Here the comparison is in error-ratio space:
+#
+#   error_ratio > burn_threshold * error_budget
+#
+# error_budget for a 99.9% objective = 0.001, so:
+#   fast: 14.4 * 0.001 = 0.0144
+#   slow: 6    * 0.001 = 0.006
+#
+# Ship EITHER these rules OR the service, not both, to the same target — they are
+# two implementations of one policy. The service earns its keep when SLOs are
+# dynamic/multi-tenant or you want an API + richer budget accounting; these rules
+# win when you want zero extra moving parts.
+groups:
+  - name: search_api_slo_alerts
+    rules:
+      - alert: SearchApiErrorBudgetFastBurn
+        expr: |
+          job:slo_error_ratio:ratio_rate1h > (14.4 * 0.001)
+          and
+          job:slo_error_ratio:ratio_rate5m > (14.4 * 0.001)
+        labels:
+          severity: page
+          slo: search-api-availability
+        annotations:
+          summary: "Fast burn: 2% of the 30d error budget in 1h"
+          description: >
+            1h and 5m error ratio both above 14.4x burn. At this rate the full
+            30-day budget is gone in ~50h. Likely a hard failure — investigate now.
+
+      - alert: SearchApiErrorBudgetSlowBurn
+        expr: |
+          job:slo_error_ratio:ratio_rate6h > (6 * 0.001)
+          and
+          job:slo_error_ratio:ratio_rate30m > (6 * 0.001)
+        labels:
+          severity: page
+          slo: search-api-availability
+        annotations:
+          summary: "Slow burn: 5% of the 30d error budget in 6h"
+          description: >
+            6h and 30m error ratio both above 6x burn. A steady bleed that will
+            exhaust the budget in ~5 days if unaddressed.
