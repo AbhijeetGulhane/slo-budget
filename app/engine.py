@@ -76,14 +76,24 @@ class SLOEngine:
         client = client or httpx.Client(timeout=self.prometheus.timeout_seconds)
         try:
             ratios = {w: self.prometheus.error_ratio(w, client=client) for w in self._windows()}
+            # Only the long (significance) windows gate on traffic.
+            long_windows = {p.long_window for p in self.policies}
+            request_rates = {w: self.prometheus.request_rate(w, client=client) for w in long_windows}
         finally:
             if owns:
                 client.close()
-        return self.build_report(ratios)
+        return self.build_report(ratios, request_rates)
 
-    def build_report(self, ratios: dict[str, float]) -> SLOReport:
+    def build_report(
+        self,
+        ratios: dict[str, float],
+        request_rates: Optional[dict[str, float]] = None,
+    ) -> SLOReport:
         """Pure: build a report from already-collected window ratios.
-        Split out from evaluate() so it is directly unit-testable."""
+        Split out from evaluate() so it is directly unit-testable.
+
+        request_rates maps long-window -> req/s and drives the low-traffic guard.
+        Omit it (None) to evaluate without the guard, e.g. in ratio-only tests."""
         full_window = f"{self.slo.window_days}d"
         window_ratio = ratios[full_window]
         window_burn = compute_burn_rate(window_ratio, self.slo.error_budget)
@@ -105,7 +115,13 @@ class SLOEngine:
         )
 
         alerts = [
-            evaluate_policy(p, self.slo, ratios[p.long_window], ratios[p.short_window])
+            evaluate_policy(
+                p,
+                self.slo,
+                ratios[p.long_window],
+                ratios[p.short_window],
+                long_request_rate=(request_rates.get(p.long_window) if request_rates else None),
+            )
             for p in self.policies
         ]
         return SLOReport(slo_name=self.slo.name, budget=budget, alerts=alerts)

@@ -66,3 +66,24 @@ class PrometheusClient:
             # No series (rule not yet materialised, or truly no data) -> treat as 0 burn.
             return 0.0
         return float(result[0]["value"][1])
+
+    def request_rate(self, window: str, client: Optional[httpx.Client] = None) -> float:
+        """Total request rate (req/s) over `window`, for the low-traffic guard."""
+        expr = f"sum(rate({self.metric}[{window}])) or vector(0)"
+        owns_client = client is None
+        client = client or httpx.Client(timeout=self.timeout_seconds)
+        try:
+            resp = client.get(f"{self.base_url}/api/v1/query", params={"query": expr})
+            resp.raise_for_status()
+            payload = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise PrometheusError(f"query failed for {expr!r}: {exc}") from exc
+        finally:
+            if owns_client:
+                client.close()
+        if payload.get("status") != "success":
+            raise PrometheusError(f"prometheus returned status {payload.get('status')} for {expr!r}")
+        result = payload["data"]["result"]
+        if not result:
+            return 0.0
+        return float(result[0]["value"][1])

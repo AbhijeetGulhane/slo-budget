@@ -86,6 +86,16 @@ class BurnRatePolicy:
     short_window: str
     threshold: float
     window_days: int = 30
+    # Low-traffic guard: minimum request rate (req/s) over the long window before
+    # the policy may fire. Below this the error ratio is statistical noise — a
+    # single 500 among a handful of requests can exceed the burn threshold — so the
+    # alert is suppressed. 0.0 disables the guard.
+    #
+    # Default 1.0 req/s => >=3600 requests in a 1h window, >=21600 in 6h; far above
+    # the point where one error trips 14.4x (~69 requests). TUNE to search-api's
+    # real off-peak baseline; a service that legitimately idles overnight wants this
+    # lower, one that never should go quiet wants it higher.
+    min_request_rate: float = 1.0
     # Tolerance for the consistency self-check (accounts for the 14.4 rounding).
     _tolerance: float = field(default=1e-3, repr=False)
 

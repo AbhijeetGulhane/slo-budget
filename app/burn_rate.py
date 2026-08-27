@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Optional
 
 from .config import SLO, BurnRatePolicy
 
@@ -67,8 +68,16 @@ class AlertEval:
     long: WindowEval
     short: WindowEval
     firing: bool
+    long_request_rate: Optional[float] = None
+    suppressed_low_traffic: bool = False
 
     def reason(self) -> str:
+        if self.suppressed_low_traffic:
+            rate = "unknown" if self.long_request_rate is None else f"{self.long_request_rate:.3g} req/s"
+            return (
+                f"suppressed: {self.long.window} traffic {rate} below the low-traffic floor "
+                f"(both windows were over {self.threshold:g}x, but the ratio is too noisy to page on)"
+            )
         if self.firing:
             return (
                 f"both windows over {self.threshold:g}x: "
@@ -89,6 +98,7 @@ def evaluate_policy(
     slo: SLO,
     long_error_ratio: float,
     short_error_ratio: float,
+    long_request_rate: Optional[float] = None,
 ) -> AlertEval:
     """Evaluate one policy against a long-window and short-window error ratio.
 
@@ -98,6 +108,12 @@ def evaluate_policy(
     of lingering for the full long window). A brief blip that only lights the
     short window never pages; a stale condition that only lights the long window
     de-asserts as soon as the short window cools.
+
+    `long_request_rate` (req/s over the long window) enables the low-traffic
+    guard: when supplied and below `policy.min_request_rate`, the alert is
+    suppressed even if both windows are over threshold, because at trickle traffic
+    a single error blows the ratio past the line without meaning anything. Pass
+    None (the default) to skip the guard entirely.
     """
     budget = slo.error_budget
     long_r = burn_rate(long_error_ratio, budget)
@@ -110,7 +126,13 @@ def evaluate_policy(
     long_eval = WindowEval(policy.long_window, long_error_ratio, long_r, long_r >= trip)
     short_eval = WindowEval(policy.short_window, short_error_ratio, short_r, short_r >= trip)
 
-    firing = long_eval.over_threshold and short_eval.over_threshold
+    both_hot = long_eval.over_threshold and short_eval.over_threshold
+
+    # Guard only bites when a rate is actually supplied and the policy opts in.
+    guard_active = long_request_rate is not None and policy.min_request_rate > 0.0
+    low_traffic = guard_active and long_request_rate < policy.min_request_rate
+    suppressed = both_hot and low_traffic
+    firing = both_hot and not low_traffic
 
     return AlertEval(
         policy=policy.name,
@@ -119,4 +141,6 @@ def evaluate_policy(
         long=long_eval,
         short=short_eval,
         firing=firing,
+        long_request_rate=long_request_rate,
+        suppressed_low_traffic=suppressed,
     )

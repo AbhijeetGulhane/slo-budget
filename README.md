@@ -79,11 +79,19 @@ uvicorn app.api:app --port 8080    # then: curl localhost:8080/slo/status
   the boundary doesn't flap. Far below any real burn-rate step, so it never masks
   a breach.
 
+## Low-traffic guard
+
+At trickle traffic a single error blows the ratio past the burn threshold without
+meaning anything. Each policy carries `min_request_rate` (req/s over the long
+window, default 1.0); when live traffic is below it, a would-be page is
+**suppressed** and the `AlertEval` records `suppressed_low_traffic=True` with a
+reason. The native alerting rules carry the same clause
+(`... and job:slo_request_rate:rate1h >= 1`) so the service and the rules agree.
+The default floor is a placeholder — **tune it to search-api's real off-peak
+baseline** (a service that legitimately idles overnight wants it lower).
+
 ## Known gaps (honest list)
 
-- **No low-traffic guard.** At tiny request volumes a single error spikes the
-  ratio and can page. The standard fix is a minimum-events floor or an absolute
-  error-count AND-term; not implemented here yet.
 - **Instant queries, not range.** Budget accounting uses one `30d` instant query;
   a `max_over_time` or proper budget integral would be sturdier across restarts.
 - **Single SLI (availability, 5xx ratio).** No latency SLO yet — that needs a
